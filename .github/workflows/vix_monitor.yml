@@ -2,12 +2,14 @@ name: VIX 恐慌指數監控
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    # 每 5 分鐘執行一次（UTC 時間，台灣時間 = UTC+8）
+    - cron: '*/5 * * * *'
+    # 每天 01:00 UTC = 台灣時間 09:00 發送日報
     - cron: '0 1 * * *'
-  workflow_dispatch:
+  workflow_dispatch:   # 允許手動觸發（測試用）
 
 permissions:
-  contents: write
+  contents: write      # 允許寫回 state 檔案
 
 jobs:
   check-vix:
@@ -34,7 +36,8 @@ jobs:
           restore-keys: |
             vix-state-
 
-      - name: Run VIX check (every 15 min)
+      - name: Run VIX check (every 5 min)
+        # 日報 cron (0 1 * * *) 時跳過此步驟
         if: github.event.schedule != '0 1 * * *'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
