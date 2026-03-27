@@ -2,15 +2,13 @@
 """
 VIX / VIXTWN 恐慌指數監控通知程式
 ========================================
-功能：
-  - 每 5 分鐘抓取 VIX（美股）和 VIXTWN（台股）指數
-  - 超過門檻時透過 Telegram Bot 推播建議（不自動下單）
-  - 每天早上 9 點發一次日報
-  - 同一警報 1 小時內不重複通知
-  - 狀態存檔，重啟後不重複通知
+推播規則：
+  - 往上突破新門檻 → 立即推播
+  - 維持同一門檻（未突破更高）→ 每天早上 10:00 推一次提醒
+  - 往下跌破（含跌出所有門檻）→ 不推播，靜默更新
 
-台股策略（0050）：VIXTWN > 30/32/35/38/40/42/45
-美股策略（VOO）：VIX > 25/28/30/32/35/38/40/42/45（複委託）
+台股（0050）門檻：VIXTWN > 30/32/35/38/40/42/45
+美股（VOO）門檻：VIX > 25/28/30/32/35/38/40/42/45（複委託）
 
 使用方式：
   python vix_monitor.py --check     # 執行一次VIX檢查（排程用）
@@ -21,7 +19,6 @@ VIX / VIXTWN 恐慌指數監控通知程式
 import argparse
 import json
 import os
-import time
 from datetime import datetime, date
 
 import pytz
@@ -30,8 +27,6 @@ import yfinance as yf
 
 # ──────────────────────────────────────────────
 #  Telegram 設定
-#  優先讀取環境變數（GitHub Actions）
-#  若無環境變數則使用下方預設值（本機執行用）
 # ──────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN = os.environ.get(
     "TELEGRAM_BOT_TOKEN",
@@ -42,40 +37,34 @@ TELEGRAM_CHAT_ID = os.environ.get(
     "8776203440"
 )
 
-# 狀態檔案（與本程式同目錄）
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(BASE_DIR, "vix_state.json")
-
-# 台灣時區
-TW_TZ = pytz.timezone("Asia/Taipei")
+TW_TZ      = pytz.timezone("Asia/Taipei")
 
 # ──────────────────────────────────────────────
-#  門檻設定（由高到低排列，命中最高門檻後停止）
-#  格式: (門檻值, 建議說明, 唯一識別key)
+#  門檻設定（由高到低排列）
 # ──────────────────────────────────────────────
 VIXTWN_THRESHOLDS = [
-    (45, "🆘 史詩級恐慌！建議買進 0050【四張】",    "VIXTWN_45"),
-    (42, "🚨 極端恐慌！建議買進 0050【三張】",       "VIXTWN_42"),
-    (40, "🚨 極度恐慌！建議買進 0050【三張】",       "VIXTWN_40"),
-    (38, "🚨 強烈恐慌！建議買進 0050【兩張】",       "VIXTWN_38"),
-    (35, "⚠️ 高度恐慌！建議買進 0050【兩張】",      "VIXTWN_35"),
-    (32, "⚠️ 恐慌升溫！建議買進 0050【一張】",      "VIXTWN_32"),
-    (30, "📢 恐慌訊號！建議買進 0050【一張】",       "VIXTWN_30"),
+    (45, "🆘 史詩級恐慌！建議買進 0050【四張】"),
+    (42, "🚨 極端恐慌！建議買進 0050【三張】"),
+    (40, "🚨 極度恐慌！建議買進 0050【三張】"),
+    (38, "🚨 強烈恐慌！建議買進 0050【兩張】"),
+    (35, "⚠️ 高度恐慌！建議買進 0050【兩張】"),
+    (32, "⚠️ 恐慌升溫！建議買進 0050【一張】"),
+    (30, "📢 恐慌訊號！建議買進 0050【一張】"),
 ]
 
 VIX_THRESHOLDS = [
-    (45, "🆘 史詩級恐慌！建議複委託買進 VOO【十萬台幣】",   "VIX_45"),
-    (42, "🚨 極端恐慌！建議複委託買進 VOO【七萬台幣】",     "VIX_42"),
-    (40, "🚨 極度恐慌！建議複委託買進 VOO【六萬台幣】",     "VIX_40"),
-    (38, "🚨 嚴重恐慌！建議複委託買進 VOO【五萬台幣】",     "VIX_38"),
-    (35, "⚠️ 強烈恐慌！建議複委託買進 VOO【四萬台幣】",    "VIX_35"),
-    (32, "⚠️ 恐慌加劇！建議複委託買進 VOO【三萬台幣】",    "VIX_32"),
-    (30, "⚠️ 高度恐慌！建議複委託買進 VOO【兩萬台幣】",    "VIX_30"),
-    (28, "📢 恐慌升溫！建議複委託買進 VOO【一萬五台幣】",   "VIX_28"),
-    (25, "📢 恐慌訊號！建議複委託買進 VOO【一萬台幣】",    "VIX_25"),
+    (45, "🆘 史詩級恐慌！建議複委託買進 VOO【十萬台幣】"),
+    (42, "🚨 極端恐慌！建議複委託買進 VOO【七萬台幣】"),
+    (40, "🚨 極度恐慌！建議複委託買進 VOO【六萬台幣】"),
+    (38, "🚨 嚴重恐慌！建議複委託買進 VOO【五萬台幣】"),
+    (35, "⚠️ 強烈恐慌！建議複委託買進 VOO【四萬台幣】"),
+    (32, "⚠️ 恐慌加劇！建議複委託買進 VOO【三萬台幣】"),
+    (30, "⚠️ 高度恐慌！建議複委託買進 VOO【兩萬台幣】"),
+    (28, "📢 恐慌升溫！建議複委託買進 VOO【一萬五台幣】"),
+    (25, "📢 恐慌訊號！建議複委託買進 VOO【一萬台幣】"),
 ]
-
-ALERT_COOLDOWN_SECS = 3600  # 1 小時不重複
 
 # ──────────────────────────────────────────────
 #  狀態管理
@@ -87,7 +76,13 @@ def load_state() -> dict:
                 return json.load(f)
         except (json.JSONDecodeError, IOError):
             pass
-    return {"last_alerts": {}, "last_daily_report": ""}
+    return {
+        "vix_active":        None,
+        "vix_daily_date":    "",
+        "vixtwn_active":     None,
+        "vixtwn_daily_date": "",
+        "last_daily_report": "",
+    }
 
 
 def save_state(state: dict) -> None:
@@ -95,34 +90,19 @@ def save_state(state: dict) -> None:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
 
-def can_alert(state: dict, alert_key: str) -> bool:
-    now  = time.time()
-    last = state.get("last_alerts", {}).get(alert_key, 0)
-    return (now - last) >= ALERT_COOLDOWN_SECS
-
-
-def mark_alerted(state: dict, alert_key: str) -> None:
-    state.setdefault("last_alerts", {})[alert_key] = time.time()
-
-
 # ──────────────────────────────────────────────
 #  Telegram 通知
 # ──────────────────────────────────────────────
 def send_telegram(message: str) -> bool:
     url  = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {
-        "chat_id":    TELEGRAM_CHAT_ID,
-        "text":       message,
-        "parse_mode": "HTML",
-    }
+    data = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
         resp = requests.post(url, data=data, timeout=10)
         if resp.status_code == 200:
             print("[Telegram ✓] 通知已發送")
             return True
-        else:
-            print(f"[Telegram ✗] 失敗 HTTP {resp.status_code}: {resp.text}")
-            return False
+        print(f"[Telegram ✗] 失敗 HTTP {resp.status_code}: {resp.text}")
+        return False
     except requests.RequestException as e:
         print(f"[Telegram ✗] 連線錯誤: {e}")
         return False
@@ -144,7 +124,6 @@ def get_vix() -> float | None:
 
 
 def get_vixtwn() -> float | None:
-    # 主要來源：Yahoo Finance
     try:
         hist = yf.Ticker("^VXTWN").history(period="5d")
         if not hist.empty:
@@ -153,23 +132,86 @@ def get_vixtwn() -> float | None:
             return val
     except Exception as e:
         print(f"[警告] Yahoo Finance ^VXTWN 失敗: {e}")
-
-    # 備用來源：TAIFEX 官網
     try:
         import re
         resp = requests.get(
             "https://www.taifex.com.tw/cht/11/vixFrontMonthDetail",
             timeout=10, headers={"User-Agent": "Mozilla/5.0"}
         )
-        m = re.search(r"台灣波動率指數[^\d]*([\.\d]+)", resp.text)
+        m = re.search(r"台灣波動率指數[^\d]*([\d.]+)", resp.text)
         if m:
             val = float(m.group(1))
             print(f"[資料] VIXTWN (TAIFEX) = {val:.2f}")
             return val
     except Exception as e:
         print(f"[警告] TAIFEX 備用來源失敗: {e}")
-
     print("[錯誤] 無法取得 VIXTWN 資料")
+    return None
+
+
+# ──────────────────────────────────────────────
+#  核心推播判斷邏輯
+# ──────────────────────────────────────────────
+def process_index(value, thresholds, state, prefix, flag, label) -> str | None:
+    """
+    推播規則：
+      突破新門檻 → 立即推播
+      維持同一門檻 → 每天 10:00 推一次
+      跌破門檻（往下）→ 不推播
+    """
+    active_key = f"{prefix}_active"
+    daily_key  = f"{prefix}_daily_date"
+
+    current_thr = None
+    current_msg = None
+    if value is not None:
+        for thr, msg in thresholds:
+            if value >= thr:
+                current_thr = thr
+                current_msg = msg
+                break
+
+    prev_thr = state.get(active_key)
+    now_tw   = datetime.now(TW_TZ)
+    today    = now_tw.date().isoformat()
+    val_s    = f"{value:.2f}" if value is not None else "N/A"
+
+    # 跌破所有門檻
+    if current_thr is None:
+        if prev_thr is not None:
+            print(f"[{label}] {val_s} 跌破所有門檻，重置狀態，不推播")
+            state[active_key] = None
+            state[daily_key]  = ""
+        else:
+            print(f"[{label}] {val_s} 未超過任何門檻")
+        return None
+
+    # 往上突破新門檻 → 立即推播
+    if prev_thr is None or current_thr > prev_thr:
+        print(f"[{label}] 突破新門檻 {current_thr}（前：{prev_thr}），立即推播")
+        state[active_key] = current_thr
+        state[daily_key]  = today
+        return (
+            f"{flag} <b>{label}：{val_s}</b>（突破門檻 {current_thr}）\n{current_msg}"
+        )
+
+    # 往下跌至較低門檻 → 不推播
+    if current_thr < prev_thr:
+        print(f"[{label}] 從門檻 {prev_thr} 跌回門檻 {current_thr}，不推播")
+        state[active_key] = current_thr
+        return None
+
+    # 維持同一門檻 → 每天 10:00 提醒一次
+    if now_tw.hour == 10 and state.get(daily_key) != today:
+        print(f"[{label}] 維持門檻 {current_thr}，10AM 每日提醒")
+        state[daily_key] = today
+        return (
+            f"{flag} <b>{label}：{val_s}</b>（持續維持門檻 {current_thr}）\n"
+            f"{current_msg}\n"
+            f"📌 今日仍位於恐慌區間，請留意"
+        )
+
+    print(f"[{label}] {val_s} 維持門檻 {current_thr}，非推播時段")
     return None
 
 
@@ -186,31 +228,11 @@ def check_and_alert() -> None:
     vixtwn = get_vixtwn()
     alerts = []
 
-    # 檢查 VIXTWN（命中最高門檻即停，各門檻有獨立冷卻）
-    if vixtwn is not None:
-        for threshold, message, key in VIXTWN_THRESHOLDS:
-            if vixtwn >= threshold:
-                if can_alert(state, key):
-                    alerts.append(
-                        f"🇹🇼 <b>台灣 VIXTWN：{vixtwn:.2f}</b>（門檻 {threshold}）\n{message}"
-                    )
-                    mark_alerted(state, key)
-                else:
-                    print(f"[冷卻] {key} 尚在冷卻期，跳過")
-                break
+    r = process_index(vixtwn, VIXTWN_THRESHOLDS, state, "vixtwn", "🇹🇼", "台灣 VIXTWN")
+    if r: alerts.append(r)
 
-    # 檢查 VIX（命中最高門檻即停，各門檻有獨立冷卻）
-    if vix is not None:
-        for threshold, message, key in VIX_THRESHOLDS:
-            if vix >= threshold:
-                if can_alert(state, key):
-                    alerts.append(
-                        f"🇺🇸 <b>美股 VIX：{vix:.2f}</b>（門檻 {threshold}）\n{message}"
-                    )
-                    mark_alerted(state, key)
-                else:
-                    print(f"[冷卻] {key} 尚在冷卻期，跳過")
-                break
+    r = process_index(vix, VIX_THRESHOLDS, state, "vix", "🇺🇸", "美股 VIX")
+    if r: alerts.append(r)
 
     if alerts:
         msg = (
@@ -219,18 +241,16 @@ def check_and_alert() -> None:
             + "\n\n⚠️ 請至元大 App 手動執行交易\n（本系統僅通知，不自動下單）"
         )
         send_telegram(msg)
-    else:
-        vix_s    = f"{vix:.2f}"    if vix    else "N/A"
-        vixtwn_s = f"{vixtwn:.2f}" if vixtwn else "N/A"
-        print(f"[正常] VIX={vix_s}，VIXTWN={vixtwn_s}，未超過任何門檻")
 
     save_state(state)
 
 
+# ──────────────────────────────────────────────
+#  每日早報
+# ──────────────────────────────────────────────
 def send_daily_report() -> None:
     state = load_state()
     today = date.today().isoformat()
-
     if state.get("last_daily_report") == today:
         print(f"[日報] 今天（{today}）已發過，略過")
         return
@@ -239,7 +259,7 @@ def send_daily_report() -> None:
     vix    = get_vix()
     vixtwn = get_vixtwn()
 
-    def level_tw(v):
+    def level(v):
         if v is None: return "─"
         if v >= 45:   return "🆘 史詩恐慌"
         if v >= 40:   return "🚨 極度恐慌"
@@ -254,32 +274,30 @@ def send_daily_report() -> None:
     msg = (
         f"📊 <b>VIX 每日早報</b>\n"
         f"📅 {now_tw.strftime('%Y/%m/%d')} 早安！\n\n"
-        f"🇹🇼 台灣 VIXTWN：<b>{vixtwn_s}</b>\n"
-        f"   狀態：{level_tw(vixtwn)}\n\n"
-        f"🇺🇸 美股 VIX：<b>{vix_s}</b>\n"
-        f"   狀態：{level_tw(vix)}\n\n"
-        f"📌 <b>台股（0050）警報門檻</b>\n"
-        f"   30／32／35／38／40／42／45\n\n"
-        f"📌 <b>美股（VOO 複委託）警報門檻</b>\n"
-        f"   25／28／30／32／35／38／40／42／45\n\n"
+        f"🇹🇼 台灣 VIXTWN：<b>{vixtwn_s}</b>　{level(vixtwn)}\n"
+        f"🇺🇸 美股 VIX：<b>{vix_s}</b>　{level(vix)}\n\n"
+        f"📌 <b>台股（0050）門檻</b>：30／32／35／38／40／42／45\n"
+        f"📌 <b>美股（VOO）門檻</b>：25／28／30／32／35／38／40／42／45\n\n"
         f"⚠️ 請至元大 App 手動執行交易"
     )
-
     if send_telegram(msg):
         state["last_daily_report"] = today
         save_state(state)
         print(f"[日報] {today} 早報已發送")
 
 
+# ──────────────────────────────────────────────
+#  啟動通知
+# ──────────────────────────────────────────────
 def send_startup_notification() -> None:
     now_tw = datetime.now(TW_TZ)
     msg = (
         f"✅ <b>VIX 監控系統已啟動</b>\n"
         f"⏰ {now_tw.strftime('%Y/%m/%d %H:%M:%S')}\n\n"
-        f"📋 <b>監控設定：</b>\n"
-        f"  • 每 5 分鐘檢查一次\n"
-        f"  • 每天 09:00 發送日報\n"
-        f"  • 相同警報 1 小時冷卻\n\n"
+        f"📋 <b>推播規則：</b>\n"
+        f"  • 突破新門檻 → 立即推播\n"
+        f"  • 維持同一門檻 → 每天 10:00 提醒\n"
+        f"  • 跌破門檻 → 不推播\n\n"
         f"🇹🇼 台股（0050）門檻：30 / 32 / 35 / 38 / 40 / 42 / 45\n"
         f"🇺🇸 美股（VOO）門檻：25 / 28 / 30 / 32 / 35 / 38 / 40 / 42 / 45\n\n"
         f"⚠️ 本系統僅通知，不自動下單"
