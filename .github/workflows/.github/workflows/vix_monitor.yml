@@ -1,0 +1,55 @@
+name: VIX 恐慌指數監控
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check-vix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install yfinance requests pytz
+
+      - name: Restore state file
+        uses: actions/cache@v4
+        with:
+          path: vix_state.json
+          key: vix-state-${{ github.run_id }}
+          restore-keys: |
+            vix-state-
+
+      - name: Run VIX check
+        if: github.event.schedule != '0 1 * * *'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python vix_monitor.py --check
+
+      - name: Run daily report
+        if: github.event.schedule == '0 1 * * *'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python vix_monitor.py --daily
+
+      - name: Save state file
+        uses: actions/cache@v4
+        with:
+          path: vix_state.json
+          key: vix-state-${{ github.run_id }}
