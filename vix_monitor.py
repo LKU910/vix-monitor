@@ -43,6 +43,7 @@ TW_TZ      = pytz.timezone("Asia/Taipei")
 
 # ──────────────────────────────────────────────
 #  門檻設定（由高到低排列）
+#  格式: (門檻值, 建議說明)
 # ──────────────────────────────────────────────
 VIXTWN_THRESHOLDS = [
     (45, "🆘 史詩級恐慌！建議買進 0050【四張】"),
@@ -68,6 +69,12 @@ VIX_THRESHOLDS = [
 
 # ──────────────────────────────────────────────
 #  狀態管理
+#  state 結構：
+#    vix_active      : 目前 VIX 觸及的最高門檻（int 或 null）
+#    vix_daily_date  : 最後一次「維持提醒」的日期
+#    vixtwn_active   : 目前 VIXTWN 觸及的最高門檻（int 或 null）
+#    vixtwn_daily_date: 最後一次「維持提醒」的日期
+#    last_daily_report: 每日早報日期
 # ──────────────────────────────────────────────
 def load_state() -> dict:
     if os.path.exists(STATE_FILE):
@@ -77,9 +84,9 @@ def load_state() -> dict:
         except (json.JSONDecodeError, IOError):
             pass
     return {
-        "vix_active":        None,
-        "vix_daily_date":    "",
-        "vixtwn_active":     None,
+        "vix_active":       None,
+        "vix_daily_date":   "",
+        "vixtwn_active":    None,
         "vixtwn_daily_date": "",
         "last_daily_report": "",
     }
@@ -124,27 +131,39 @@ def get_vix() -> float | None:
 
 
 def get_vixtwn() -> float | None:
+    # 主要：TAIFEX MIS 行情網（伺服器端渲染，直接解析 HTML）
+    try:
+        import re as _re
+        resp = requests.get(
+            "https://mis.taifex.com.tw/futures/VolatilityQuotes/",
+            timeout=15,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        )
+        if resp.status_code == 200:
+            # 格式：臺指選擇權波動率指數 ... <span class="g">36.22</span>
+            m = _re.search(
+                r"臺指選擇權波動率指數.*?<span[^>]*>([d.]+)</span>",
+                resp.text,
+                _re.DOTALL
+            )
+            if m:
+                val = float(m.group(1))
+                print(f"[資料] VIXTWN (TAIFEX MIS) = {val:.2f}")
+                return val
+            print("[警告] TAIFEX MIS 頁面無法解析數值")
+        else:
+            print(f"[警告] TAIFEX MIS HTTP {resp.status_code}")
+    except Exception as e:
+        print(f"[警告] TAIFEX MIS 失敗: {e}")
+    # 備用：Yahoo Finance（^VXTWN，目前可能已下架）
     try:
         hist = yf.Ticker("^VXTWN").history(period="5d")
         if not hist.empty:
             val = float(hist["Close"].iloc[-1])
-            print(f"[資料] VIXTWN = {val:.2f}")
+            print(f"[資料] VIXTWN (Yahoo) = {val:.2f}")
             return val
     except Exception as e:
         print(f"[警告] Yahoo Finance ^VXTWN 失敗: {e}")
-    try:
-        import re
-        resp = requests.get(
-            "https://www.taifex.com.tw/cht/11/vixFrontMonthDetail",
-            timeout=10, headers={"User-Agent": "Mozilla/5.0"}
-        )
-        m = re.search(r"台灣波動率指數[^\d]*([\d.]+)", resp.text)
-        if m:
-            val = float(m.group(1))
-            print(f"[資料] VIXTWN (TAIFEX) = {val:.2f}")
-            return val
-    except Exception as e:
-        print(f"[警告] TAIFEX 備用來源失敗: {e}")
     print("[錯誤] 無法取得 VIXTWN 資料")
     return None
 
@@ -154,14 +173,13 @@ def get_vixtwn() -> float | None:
 # ──────────────────────────────────────────────
 def process_index(value, thresholds, state, prefix, flag, label) -> str | None:
     """
-    推播規則：
-      突破新門檻 → 立即推播
-      維持同一門檻 → 每天 10:00 推一次
-      跌破門檻（往下）→ 不推播
+    根據當前值與歷史狀態決定是否推播。
+    回傳推播文字，或 None（不推播）。
     """
     active_key = f"{prefix}_active"
     daily_key  = f"{prefix}_daily_date"
 
+    # 找出當前命中的最高門檻
     current_thr = None
     current_msg = None
     if value is not None:
@@ -171,12 +189,12 @@ def process_index(value, thresholds, state, prefix, flag, label) -> str | None:
                 current_msg = msg
                 break
 
-    prev_thr = state.get(active_key)
+    prev_thr = state.get(active_key)  # 上次記錄的門檻（None 或數字）
     now_tw   = datetime.now(TW_TZ)
     today    = now_tw.date().isoformat()
     val_s    = f"{value:.2f}" if value is not None else "N/A"
 
-    # 跌破所有門檻
+    # ── 跌破所有門檻 ──────────────────────────
     if current_thr is None:
         if prev_thr is not None:
             print(f"[{label}] {val_s} 跌破所有門檻，重置狀態，不推播")
@@ -186,22 +204,23 @@ def process_index(value, thresholds, state, prefix, flag, label) -> str | None:
             print(f"[{label}] {val_s} 未超過任何門檻")
         return None
 
-    # 往上突破新門檻 → 立即推播
+    # ── 往上突破新門檻 → 立即推播 ─────────────
     if prev_thr is None or current_thr > prev_thr:
         print(f"[{label}] 突破新門檻 {current_thr}（前：{prev_thr}），立即推播")
         state[active_key] = current_thr
-        state[daily_key]  = today
+        state[daily_key]  = today   # 今天已推，跳過今天的維持提醒
         return (
             f"{flag} <b>{label}：{val_s}</b>（突破門檻 {current_thr}）\n{current_msg}"
         )
 
-    # 往下跌至較低門檻 → 不推播
+    # ── 往下跌至較低門檻 → 不推播 ─────────────
     if current_thr < prev_thr:
         print(f"[{label}] 從門檻 {prev_thr} 跌回門檻 {current_thr}，不推播")
         state[active_key] = current_thr
         return None
 
-    # 維持同一門檻 → 每天 10:00 提醒一次
+    # ── 維持同一門檻 → 每天 10:00 提醒一次 ────
+    # current_thr == prev_thr
     if now_tw.hour == 10 and state.get(daily_key) != today:
         print(f"[{label}] 維持門檻 {current_thr}，10AM 每日提醒")
         state[daily_key] = today
@@ -229,10 +248,12 @@ def check_and_alert() -> None:
     alerts = []
 
     r = process_index(vixtwn, VIXTWN_THRESHOLDS, state, "vixtwn", "🇹🇼", "台灣 VIXTWN")
-    if r: alerts.append(r)
+    if r:
+        alerts.append(r)
 
     r = process_index(vix, VIX_THRESHOLDS, state, "vix", "🇺🇸", "美股 VIX")
-    if r: alerts.append(r)
+    if r:
+        alerts.append(r)
 
     if alerts:
         msg = (
