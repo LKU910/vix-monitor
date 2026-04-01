@@ -2,8 +2,8 @@ name: VIX 恐慌指數監控
 
 on:
   schedule:
-    # 每 5 分鐘執行一次（UTC 時間，台灣時間 = UTC+8）
-    - cron: '*/5 * * * *'
+    # 每 30 分鐘執行一次（UTC 時間，台灣時間 = UTC+8）
+    - cron: '*/30 * * * *'
     # 每天 01:00 UTC = 台灣時間 09:00 發送日報
     - cron: '0 1 * * *'
   workflow_dispatch:   # 允許手動觸發（測試用）
@@ -28,13 +28,6 @@ jobs:
       - name: Install dependencies
         run: pip install yfinance requests pytz
 
-      - name: Restore state file
-        uses: actions/cache@v4
-        with:
-          path: vix_state.json
-          key: vix-state-${{ github.run_id }}
-          restore-keys: |
-            vix-state-
 
       - name: Run VIX check (every 5 min)
         # 日報 cron (0 1 * * *) 時跳過此步驟
@@ -51,8 +44,10 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python vix_monitor.py --daily
 
-      - name: Save state file
-        uses: actions/cache@v4
-        with:
-          path: vix_state.json
-          key: vix-state-${{ github.run_id }}
+      - name: Save state to git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add vix_state.json || true
+          git diff --staged --quiet || git commit -m "chore: update vix state [skip ci]"
+          git push || true
