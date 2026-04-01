@@ -4,8 +4,8 @@ on:
   schedule:
     # 每 30 分鐘執行一次（UTC 時間，台灣時間 = UTC+8）
     - cron: '*/30 * * * *'
-    # 每天 01:00 UTC = 台灣時間 09:00 發送日報
-    - cron: '0 1 * * *'
+    # 每天 13:00 UTC = 台灣時間 21:00 發送晚報
+    - cron: '0 13 * * *'
   workflow_dispatch:   # 允許手動觸發（測試用）
 
 permissions:
@@ -30,15 +30,15 @@ jobs:
 
 
       - name: Run VIX check (every 5 min)
-        # 日報 cron (0 1 * * *) 時跳過此步驟
-        if: github.event.schedule != '0 1 * * *'
+        # 晚報 cron (0 13 * * *) 時跳過此步驟
+        if: github.event.schedule != '0 13 * * *'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python vix_monitor.py --check
 
-      - name: Run daily report (09:00 台灣時間)
-        if: github.event.schedule == '0 1 * * *'
+      - name: Run daily report (21:00 台灣時間)
+        if: github.event.schedule == '0 13 * * *'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
