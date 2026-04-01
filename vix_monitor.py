@@ -19,7 +19,7 @@ VIX / VIXTWN 恐慌指數監控通知程式
 import argparse
 import json
 import os
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 import pytz
 import requests
@@ -132,6 +132,75 @@ def get_vix() -> float | None:
 
 def get_vixtwn() -> float | None:
     # 主要：TAIFEX MIS 行情網（伺服器端渲染，直接解析 HTML）
+    # ── 來源0a：TAIFEX 主站 HTML（www.taifex.com.tw）─────
+    try:
+        resp = requests.get(
+            "https://www.taifex.com.tw/cht/3/volIndx",
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+                "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+            },
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            html = resp.text
+            patterns = [
+                r'VIXMTX.*?>\s*([\d]{2,3}\.[\d]{2})\s*<',
+                r'波動率指數.*?>\s*([\d]{2,3}\.[\d]{2})\s*<',
+                r'臺指.*?波動.*?>\s*([\d]{2,3}\.[\d]{2})\s*<',
+                r'>([\d]{2,3}\.[\d]{2})<',  # 備用：任何符合範圍的數字
+            ]
+            for pat in patterns:
+                for m in re.finditer(pat, html, re.DOTALL | re.IGNORECASE):
+                    try:
+                        val = float(m.group(1))
+                        if 5 < val < 100:
+                            print(f"[資料] VIXTWN (TAIFEX www HTML) = {val:.2f}")
+                            return val
+                    except ValueError:
+                        continue
+            print(f"[警告] TAIFEX www HTML 無法解析數值，長度: {len(html)}")
+    except Exception as e:
+        print(f"[警告] TAIFEX www HTML 失敗: {e}")
+
+    # ── 來源0b：TAIFEX 主站下載頁（盤後 CSV，向前找最近 3 天）──
+    try:
+        dl_headers = {
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://www.taifex.com.tw/cht/3/volIndx",
+        }
+        for delta in range(3):  # 今天 → 昨天 → 前天
+            check_date = (date.today() - timedelta(days=delta)).strftime("%Y/%m/%d")
+            try:
+                resp = requests.get(
+                    "https://www.taifex.com.tw/cht/3/volIndxDown",
+                    params={
+                        "queryStartDate": check_date,
+                        "queryEndDate":   check_date,
+                        "button":         "送出",
+                    },
+                    headers=dl_headers,
+                    timeout=15,
+                )
+                if resp.status_code == 200 and len(resp.text) > 50:
+                    matches = re.findall(r'\b(\d{2,3}\.\d{1,4})\b', resp.text)
+                    for m in reversed(matches):
+                        try:
+                            val = float(m)
+                            if 5 < val < 100:
+                            print(f"[資料] VIXTWN (TAIFEX 下載 {check_date}) = {val:.2f}")
+                            return val
+                        except ValueError:
+                            continue
+            except Exception:
+                continue
+    except Exception as e:
+        print(f"[警告] TAIFEX 下載頁失敗: {e}")
+
     try:
         import re as _re
         resp = requests.get(
@@ -265,10 +334,10 @@ def check_and_alert() -> None:
 
     save_state(state)
 
-    # ── 補發日報（GitHub Actions 排程不保證準時，09:00 後自動補發）──
+    # ── 補發日報（GitHub Actions 排程不保證準時，09:00~11:59 內自動補發）──
     today_str = date.today().isoformat()
-    if now_tw.hour >= 9 and state.get("last_daily_report") != today_str:
-        print(f"[日報] 09:00 後尚未發送今日早報，補發中...")
+    if 9 <= now_tw.hour < 12 and state.get("last_daily_report") != today_str:
+        print(f"[日報] 09:00~11:59 內尚未發送今日早報，補發中...")
         send_daily_report()
 
 
