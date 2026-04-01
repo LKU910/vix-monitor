@@ -42,7 +42,7 @@ TW_TZ = pytz.timezone("Asia/Taipei")
 
 # ──────────────────────────────────────────────
 # 門檻設定（由高到低排列）
-# 格式: (門檻值, 建議說明)
+# 格式6 (門檻值, 建議說明)
 # ──────────────────────────────────────────────
 VIXTWN_THRESHOLDS = [
     (45, "🆘 史詩級恐慌！建議買進 0050【四張】"),
@@ -130,7 +130,7 @@ def get_vix() -> float | None:
 
 
 def get_vixtwn() -> float | None:
-    # ── 來源0a：TAIFEX 主站 HTML（www.taifex.com.tw）─────────────────────
+    # ── 來源0a：TAIFEX 丷站 HTML（www.taifex.com.tw）─────────────────────
     try:
         resp = requests.get(
             "https://www.taifex.com.tw/cht/3/volIndx",
@@ -167,7 +167,7 @@ def get_vixtwn() -> float | None:
     except Exception as e:
         print(f"[警告] TAIFEX www HTML 失敗: {e}")
 
-    # ── 來源0b：TAIFEX 主站下載頁（盤後 CSV，向前找最近 3 天）───────────
+    # ── $��源0b：TAIFEX $��站下載頁（盤後 CSV，向前找最近 3 天）───────────
     try:
         dl_headers = {
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) Chrome/120.0.0.0 Safari/537.36",
@@ -192,7 +192,7 @@ def get_vixtwn() -> float | None:
                         try:
                             val = float(m)
                             if 5 < val < 100:
-                                print(f"[資料] VIXTWN (TAIFEX 下載 {check_date}) = {val:.2f}")
+                                print(f"[資料] VIXTWN (TAIFEX $��載 {check_date}) = {val:.2f}")
                                 return val
                         except ValueError:
                             continue
@@ -201,7 +201,7 @@ def get_vixtwn() -> float | None:
     except Exception as e:
         print(f"[警告] TAIFEX 下載頁失敗: {e}")
 
-    # ── 來源1：TAIFEX MIS 行情網（可能已改為 WebSocket，備用）──────────
+    # ── $��源1：TAIFEX MIS 行情網（可能已改為 WebSocket，備用）──────────
     try:
         resp = requests.get(
             "https://mis.taifex.com.tw/futures/VolatilityQuotes/",
@@ -275,7 +275,7 @@ def process_index(value, thresholds, state, prefix, flag, label) -> str | None:
     if prev_thr is None or current_thr > prev_thr:
         print(f"[{label}] 突破新門檻 {current_thr}（前：{prev_thr}），立即推播")
         state[active_key] = current_thr
-        state[daily_key] = today  # 今天已推，跳過今天的維持提醒
+        state[daily_key] = today  # $��天已推，跳過今天的維持提醒
         return (
             f"{flag} <b>{label}：{val_s}</b>（突破門檻 {current_thr}）\n{current_msg}"
         )
@@ -311,12 +311,8 @@ def check_and_alert() -> None:
 
     state = load_state()
     vix = get_vix()
-    vixtwn = get_vixtwn()
 
     alerts = []
-    r = process_index(vixtwn, VIXTWN_THRESHOLDS, state, "vixtwn", "🇹🇼", "台灣 VIXTWN")
-    if r:
-        alerts.append(r)
     r = process_index(vix, VIX_THRESHOLDS, state, "vix", "🇺🇸", "美股 VIX")
     if r:
         alerts.append(r)
@@ -331,26 +327,25 @@ def check_and_alert() -> None:
 
     save_state(state)
 
-    # ── 補發日報（GitHub Actions 排程不保證準時，09:00~11:59 內自動補發）──
+    # ── 補發晚報（GitHub Actions 排程不保證準時，21:00~22:59 內自動補發）──
     today_str = date.today().isoformat()
-    if 9 <= now_tw.hour < 12 and state.get("last_daily_report") != today_str:
-        print(f"[日報] 09:00~11:59 內尚未發送今日早報，補發中...")
+    if 21 <= now_tw.hour < 23 and state.get("last_daily_report") != today_str:
+        print(f"[晚報] 21:00~22:59 內尚未發送今日晚報，補發中...")
         send_daily_report()
 
 
 # ──────────────────────────────────────────────
-# 每日早報
+# 每日晚報（台灣時間 21:00，美股開盤前）
 # ──────────────────────────────────────────────
 def send_daily_report() -> None:
     state = load_state()
     today = date.today().isoformat()
     if state.get("last_daily_report") == today:
-        print(f"[日報] 今天（{today}）已發過，略過")
+        print(f"[晚報] 今天（{today}）已發過，略過")
         return
 
     now_tw = datetime.now(TW_TZ)
     vix = get_vix()
-    vixtwn = get_vixtwn()
 
     def level(v):
         if v is None:
@@ -368,21 +363,18 @@ def send_daily_report() -> None:
         return "🟢 正常"
 
     vix_s = f"{vix:.2f}" if vix else "無法取得"
-    vixtwn_s = f"{vixtwn:.2f}" if vixtwn else "無法取得"
 
     msg = (
-        f"📊 <b>VIX 每日早報</b>\n"
-        f"📅 {now_tw.strftime('%Y/%m/%d')} 早安！\n\n"
-        f"🇹🇼 台灣 VIXTWN：<b>{vixtwn_s}</b> {level(vixtwn)}\n"
+        f"📊 <b>VIX 每日晚報</b>\n"
+        f"📅 {now_tw.strftime('%Y/%m/%d')} 晚安！\n\n"
         f"🇺🇸 美股 VIX：<b>{vix_s}</b> {level(vix)}\n\n"
-        f"📌 <b>台股（0050）門檻</b>：30／32／35／38／40／42／45\n"
         f"📌 <b>美股（VOO）門檻</b>：25／28／30／32／35／38／40／42／45\n\n"
         f"⚠️ 請至元大 App 手動執行交易"
     )
     if send_telegram(msg):
         state["last_daily_report"] = today
         save_state(state)
-        print(f"[日報] {today} 早報已發送")
+        print(f"[晚報] {today} 晚報已發送")
 
 
 # ──────────────────────────────────────────────
@@ -397,7 +389,6 @@ def send_startup_notification() -> None:
         f" • 突破新門檻 → 立即推播\n"
         f" • 維持同一門檻 → 每天 10:00 提醒\n"
         f" • 跌破門檻 → 不推播\n\n"
-        f"🇹🇼 台股（0050）門檻：30 / 32 / 35 / 38 / 40 / 42 / 45\n"
         f"🇺🇸 美股（VOO）門檻：25 / 28 / 30 / 32 / 35 / 38 / 40 / 42 / 45\n\n"
         f"⚠️ 本系統僅通知，不自動下單"
     )
